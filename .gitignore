@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+*.log
+
+# Trained weights are uploaded separately via Grand Challenge > Algorithm > Models,
+# never committed to the repo (GitHub enforces a 1 GiB/month bandwidth limit on
+# repo downloads, which large nnU-Net checkpoints blow past easily).
+model/nnUNet_results/
+
+# Local test data / scratch — never needed in the repo
+test/input/
+test/output/
+test/.staging_input/
+test/.staging_output/
+input/
+output/
+tmp/

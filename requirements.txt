@@ -1,0 +1,8 @@
+numpy
+SimpleITK
+scikit-image
+fastapi
+uvicorn
+
+# nnU-Net inference backend (torch itself is already provided by the base image)
+nnunetv2
