@@ -56,8 +56,8 @@ MODEL_DIR = Path("/opt/ml/model")
 NNUNET_CONFIGURATION = "3d_fullres"
 NNUNET_TRAINER = "nnUNetTrainer"
 NNUNET_PLANS = "nnUNetResEncUNetLPlans"
-NNUNET_FOLDS = (0,)
-NNUNET_CHECKPOINT = "checkpoint_final.pth"
+NNUNET_FOLDS = (0,1)
+NNUNET_CHECKPOINT = "checkpoint_best.pth"
 
 # -----------------------------------------------------------------------------
 # Manual preprocessing to replicate before calling nnU-Net.
