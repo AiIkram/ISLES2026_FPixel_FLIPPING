@@ -56,8 +56,8 @@ MODEL_DIR = Path("/opt/ml/model")
 NNUNET_CONFIGURATION = "3d_fullres"
 NNUNET_TRAINER = "nnUNetTrainer"
 NNUNET_PLANS = "nnUNetResEncUNetLPlans"
-NNUNET_FOLDS = (0,)
-NNUNET_CHECKPOINT = "checkpoint_final.pth"
+NNUNET_FOLDS = (0,1)
+NNUNET_CHECKPOINT = "checkpoint_best.pth"
 
 # -----------------------------------------------------------------------------
 # Manual preprocessing to replicate before calling nnU-Net.
@@ -130,10 +130,6 @@ def init_model():
     Path(os.environ["nnUNet_raw"]).mkdir(parents=True, exist_ok=True)
     Path(os.environ["nnUNet_preprocessed"]).mkdir(parents=True, exist_ok=True)
 
-    # nnUNetTrainerDiceFocal is a custom trainer, not part of the nnunetv2 pip
-    # package — this tells nnU-Net where to find it (see custom_trainers/).
-    os.environ.setdefault("nnUNet_extTrainer", "/opt/app/custom_trainers")
-
     import torch
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
@@ -143,7 +139,7 @@ def init_model():
     predictor = nnUNetPredictor(
         tile_step_size=0.5,
         use_gaussian=True,
-        use_mirroring=True,
+        use_mirroring=False,
         perform_everything_on_device=torch.cuda.is_available(),
         device=device,
         verbose=False,
