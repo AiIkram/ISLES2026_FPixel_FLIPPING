@@ -33,7 +33,7 @@ RUN python -m pip install \
 
 COPY --chown=user:user app.py /opt/app/
 COPY --chown=user:user inference.py /opt/app/
-COPY --chown=user:user custom_trainers /opt/app/custom_trainers
+
 
 # This label is required — Grand Challenge uses it to detect that the container
 # implements the invoke API. Without it, the examples provided in this starter kit will not work.
