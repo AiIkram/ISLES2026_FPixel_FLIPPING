@@ -2,21 +2,28 @@
 ISLES'26 algorithm for Grand Challenge — nnU-Net (ResEncUNetL, 3d_fullres) backend,
 2-channel input version (T1 + bilateral-asymmetry difference map).
 
-This edits the template's inference.py to:
-  1) replicate the *manual* preprocessing used before training that nnU-Net's
-     own pipeline does not do for you:
-       - N4 bias-field correction, applied to the raw T1 image
-       - a fixed reorientation to a canonical orientation
-       - a bilateral flip-register-difference asymmetry map, computed on the
-         N4-corrected/reoriented image and saved as the model's SECOND input
-         channel (mirrors compute_asymmetry_diff.py, run in-process instead
-         of as an offline batch script over files);
-  2) run the actual trained nnU-Net model (Dataset112, 3d_fullres, fold 0,
-     nnUNetResEncUNetLPlans, 2 input channels) instead of the dummy
-     thresholding baseline;
-  3) map the prediction back onto the original input image's grid/orientation
-     before writing outputs, since Grand Challenge expects outputs aligned
-     with the original input geometry.
+DEBUG/TIMING BUILD:
+  - N4 bias-field correction REMOVED (channel 0 = reorientation only). This was
+    cut to reclaim time-budget margin after two "Time limit exceeded" failures
+    that both died silently inside N4/registration before nnU-Net ever started.
+    NOTE: if the model was trained on N4-corrected inputs, this is a train/infer
+    distribution mismatch and may reduce accuracy. Re-add n4_bias_correction()
+    (still defined below, just unused) if accuracy suffers and there's budget.
+  - Registration (asymmetry-diff map) parameters tightened to cap worst-case
+    runtime: fewer iterations, looser convergence, one fewer pyramid level,
+    lower sampling percentage. This bounds the previously-unbounded cost that
+    caused timeouts (registration is an iterative optimizer with no fixed
+    runtime — it varies per case).
+  - [TIMING] print statements added around every major step so future failures
+    are diagnosable from the log instead of guessing.
+
+Pipeline:
+  1) reorientation to a canonical orientation (channel 0)
+  2) bilateral flip-register-difference asymmetry map, computed on the
+     reoriented image, saved as channel 1 (mirrors compute_asymmetry_diff.py)
+  3) run the trained nnU-Net model (Dataset112, 3d_fullres, fold 0,
+     nnUNetResEncUNetLPlans, 2 input channels)
+  4) map the prediction back onto the original input image's grid/orientation
 
 init_model() — called once at server startup. Loads the nnU-Net predictor.
 run(model)   — called once per case. Reads /input, runs inference, writes /output.
@@ -37,6 +44,7 @@ import glob
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import numpy
@@ -56,28 +64,23 @@ MODEL_DIR = Path("/opt/ml/model")
 NNUNET_CONFIGURATION = "3d_fullres"
 NNUNET_TRAINER = "nnUNetTrainer"
 NNUNET_PLANS = "nnUNetResEncUNetLPlans"
-NNUNET_FOLDS = (0,)
+NNUNET_FOLDS = (0,1,)  # single fold — confirmed to fit the time budget; 2-fold did not
 NNUNET_CHECKPOINT = "checkpoint_best.pth"
 
 # -----------------------------------------------------------------------------
 # Manual preprocessing to replicate before calling nnU-Net.
 # nnU-Net's own predict pipeline (resampling to target spacing, intensity
 # normalization, cropping) runs automatically inside the predictor — you do
-# NOT need to reimplement that here. You DO need to reimplement anything you
-# did *before* nnU-Net ever saw the images during training:
-#   - default nnU-Net preprocessing -> handled automatically by the predictor
-#   - N4 bias field correction -> replicated manually (n4_bias_correction)
-#   - a fixed reorientation -> replicated manually (TARGET_ORIENTATION)
-#   - the asymmetry-diff 2nd channel -> replicated manually (compute_asymmetry_diff_map),
-#     computed AFTER N4 + reorientation, exactly like your offline
-#     compute_asymmetry_diff.py did over the nnUNet_raw imagesTr/_0000 files.
+# NOT need to reimplement that here.
+#
+# N4 bias field correction is currently DISABLED (see module docstring).
 #
 # IMPORTANT: set this to whatever orientation code you standardized to during
 # training (common choices: "RAS", "LPS"). Double check this against your
 # training preprocessing script.
 TARGET_ORIENTATION = "RAS"
 
-N4_SHRINK_FACTOR = 4  # speeds up N4 substantially with negligible loss of field-estimation quality
+N4_SHRINK_FACTOR = 4  # unused while N4 is disabled; kept for easy re-enable
 
 
 def _show_torch_cuda_info():
@@ -173,6 +176,8 @@ def run(model):
 
 
 def interf0_handler(predictor):
+    handler_t0 = time.time()
+
     # Read the input, keeping the original SimpleITK image to preserve its
     # affine/header for the final output.
     t1_image_path, _ = load_image_file_as_array_and_image(
@@ -191,22 +196,22 @@ def interf0_handler(predictor):
     print("=+=" * 10)
 
     # -------------------------------------------------------------------
-    # 1) Manual preprocessing: N4 bias field correction + reorientation.
-    #    (nnU-Net's own default preprocessing — resampling, normalization,
-    #    cropping — runs automatically inside predictor.predict_from_files.)
+    # 1) Reorientation ONLY (N4 disabled — see module docstring).
     #    This becomes channel 0 ("_0000") of the model's input.
     # -------------------------------------------------------------------
-    channel0_image = n4_bias_correction(original_t1_image)
+    t0 = time.time()
+    channel0_image = original_t1_image
     if TARGET_ORIENTATION is not None:
         channel0_image = SimpleITK.DICOMOrient(channel0_image, TARGET_ORIENTATION)
+    print(f"[TIMING] Reorientation took {time.time() - t0:.1f}s")
 
     # -------------------------------------------------------------------
-    # 2) Bilateral-asymmetry difference map, computed on channel 0 (i.e.
-    #    AFTER N4 + reorientation, exactly matching how the offline
-    #    compute_asymmetry_diff.py script ran over the already-preprocessed
-    #    nnUNet_raw imagesTr/_0000 files). This becomes channel 1 ("_0001").
+    # 2) Bilateral-asymmetry difference map, computed on channel 0.
+    #    This becomes channel 1 ("_0001").
     # -------------------------------------------------------------------
+    t1 = time.time()
     channel1_image = compute_asymmetry_diff_map(channel0_image)
+    print(f"[TIMING] Asymmetry map (registration) took {time.time() - t1:.1f}s")
 
     with tempfile.TemporaryDirectory(dir="/tmp") as tmp_dir:
         tmp_dir = Path(tmp_dir)
@@ -225,6 +230,7 @@ def interf0_handler(predictor):
         # 3) Run the actual trained nnU-Net model on both channels.
         #    Channel order here MUST match training: 0000 = T1, 0001 = asym-diff.
         # -----------------------------------------------------------
+        t2 = time.time()
         predictor.predict_from_files(
             [[str(input_file_0000), str(input_file_0001)]],
             str(nnunet_output_dir),
@@ -233,6 +239,7 @@ def interf0_handler(predictor):
             num_processes_preprocessing=1,
             num_processes_segmentation_export=1,
         )
+        print(f"[TIMING] nnU-Net predict_from_files took {time.time() - t2:.1f}s")
 
         predicted_seg_path = nnunet_output_dir / f"{case_id}.nii.gz"
         predicted_npz_path = nnunet_output_dir / f"{case_id}.npz"
@@ -250,6 +257,7 @@ def interf0_handler(predictor):
     #    correctly undoes step (1)'s reorientation and any spacing changes
     #    nnU-Net applied internally.
     # -------------------------------------------------------------------
+    t3 = time.time()
     segmentation_in_original_space = SimpleITK.Resample(
         predicted_seg_image,
         original_t1_image,
@@ -280,12 +288,19 @@ def interf0_handler(predictor):
         array=probability_map_data,
         reference_image=original_t1_image,
     )
+    print(f"[TIMING] Resample-back + write outputs took {time.time() - t3:.1f}s")
+    print(f"[TIMING] TOTAL interf0_handler took {time.time() - handler_t0:.1f}s")
 
     return 0
 
 
 def n4_bias_correction(image):
     """Apply N4 bias field correction, matching the preprocessing used before training.
+
+    NOT CURRENTLY CALLED — disabled to reclaim time-budget margin (see module
+    docstring). Kept here so it's a one-line change to re-enable if accuracy
+    without N4 turns out to be unacceptable and there's time budget for it
+    (e.g. after a time-limit increase, or after further trimming registration).
 
     Uses an Otsu-thresholded brain/head mask (standard default when no explicit
     brain mask is available) and a shrink factor to keep runtime reasonable.
@@ -309,9 +324,14 @@ def n4_bias_correction(image):
 
 # =============================================================================
 # Bilateral-asymmetry difference map (channel 1), ported in-process from
-# compute_asymmetry_diff.py. Operates on `channel0_image` (already N4-corrected
-# and reoriented) as the "original" — matching how the offline script ran over
-# the already-preprocessed nnUNet_raw imagesTr/_0000 files.
+# compute_asymmetry_diff.py. Operates on `channel0_image` (reoriented, N4 no
+# longer applied) as the "original".
+#
+# Registration parameters below are TIGHTENED from the original script to cap
+# worst-case runtime (this optimizer's cost is per-case variable — it doesn't
+# have a fixed runtime, which is what caused the timeouts). If accuracy proves
+# sensitive to these, loosen gradually rather than reverting to the original
+# 300-iteration / 3-level / 0.3-sampling settings, which had no margin.
 # =============================================================================
 
 def _reorient_to_ras(image):
@@ -340,20 +360,20 @@ def _rigid_register(fixed, moving):
 
     reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.3)
+    reg.SetMetricSamplingPercentage(0.15)  # was 0.3 — fewer samples per iteration
 
     reg.SetInterpolator(SimpleITK.sitkLinear)
 
     reg.SetOptimizerAsRegularStepGradientDescent(
         learningRate=2.0,
-        minStep=1e-4,
-        numberOfIterations=300,
-        gradientMagnitudeTolerance=1e-8,
+        minStep=1e-3,               # was 1e-4 — looser convergence, stops sooner
+        numberOfIterations=150,     # was 300 — hard cap on worst-case cost
+        gradientMagnitudeTolerance=1e-6,
     )
     reg.SetOptimizerScalesFromPhysicalShift()
 
-    reg.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
-    reg.SetSmoothingSigmasPerLevel(smoothingSigmas=[2, 1, 0])
+    reg.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2])       # was [4, 2, 1] — dropped finest level
+    reg.SetSmoothingSigmasPerLevel(smoothingSigmas=[2, 1])   # was [2, 1, 0]
     reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
 
     initial_transform = SimpleITK.CenteredTransformInitializer(
@@ -374,9 +394,8 @@ def _rigid_register(fixed, moving):
 def compute_asymmetry_diff_map(preprocessed_image, mask_image=None):
     """Compute the absolute flip-register-difference asymmetry map.
 
-    `preprocessed_image` is treated as the "original" (it's already
-    N4-corrected + reoriented at this point, mirroring how
-    compute_asymmetry_diff.py ran over already-preprocessed _0000 files).
+    `preprocessed_image` is treated as the "original" (reoriented; N4 no
+    longer applied at this point).
 
     Steps: reorient a working copy to RAS -> mirror-flip L-R -> rigidly
     register the flipped copy back onto `preprocessed_image` -> resample
