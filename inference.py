@@ -139,7 +139,7 @@ def init_model():
     predictor = nnUNetPredictor(
         tile_step_size=0.5,
         use_gaussian=True,
-        use_mirroring=False,
+        use_mirroring=True,
         perform_everything_on_device=torch.cuda.is_available(),
         device=device,
         verbose=False,
