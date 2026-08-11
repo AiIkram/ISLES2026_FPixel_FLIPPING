@@ -64,7 +64,7 @@ MODEL_DIR = Path("/opt/ml/model")
 NNUNET_CONFIGURATION = "3d_fullres"
 NNUNET_TRAINER = "nnUNetTrainer"
 NNUNET_PLANS = "nnUNetResEncUNetLPlans"
-NNUNET_FOLDS = (0,1,)  # single fold — confirmed to fit the time budget; 2-fold did not
+NNUNET_FOLDS = (0,1,2,3,4,)  # single fold — confirmed to fit the time budget; 2-fold did not
 NNUNET_CHECKPOINT = "checkpoint_best.pth"
 
 # -----------------------------------------------------------------------------
