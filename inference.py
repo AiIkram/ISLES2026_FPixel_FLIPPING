@@ -306,13 +306,17 @@ def interf0_handler(predictor):
                                   # CPU; -np 8 from local CLI runs was for offline batch
                                   # processing, not appropriate for a single-case container.
             )
-            nnunet_output_dir = postprocessed_dir
             print(f"[TIMING] Postprocessing took {time.time() - t_pp:.1f}s")
+            # IMPORTANT: apply_postprocessing_to_folder only writes the postprocessed
+            # SEGMENTATION (case.nii.gz) — it does not touch/copy the probability .npz.
+            # So the segmentation comes from postprocessed_dir, but the probability
+            # map still has to be read from the original (pre-postprocessing) output.
+            predicted_seg_path = postprocessed_dir / f"{case_id}.nii.gz"
+            predicted_npz_path = nnunet_output_dir / f"{case_id}.npz"
         else:
             print("[TIMING] No postprocessing.pkl/plans.json found under MODEL_DIR — skipping postprocessing")
-
-        predicted_seg_path = nnunet_output_dir / f"{case_id}.nii.gz"
-        predicted_npz_path = nnunet_output_dir / f"{case_id}.npz"
+            predicted_seg_path = nnunet_output_dir / f"{case_id}.nii.gz"
+            predicted_npz_path = nnunet_output_dir / f"{case_id}.npz"
 
         predicted_seg_image = SimpleITK.ReadImage(str(predicted_seg_path))
         probability_map_data = load_lesion_probability_map(predicted_npz_path)
