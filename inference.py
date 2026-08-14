@@ -16,14 +16,20 @@ DEBUG/TIMING BUILD:
     runtime — it varies per case).
   - [TIMING] print statements added around every major step so future failures
     are diagnosable from the log instead of guessing.
+  - Postprocessing (largest-connected-component etc., from
+    nnUNetv2_find_best_configuration) applied after prediction, if
+    postprocessing.pkl/plans.json are found under MODEL_DIR. This is optional —
+    missing files just skip postprocessing rather than crashing.
 
 Pipeline:
   1) reorientation to a canonical orientation (channel 0)
   2) bilateral flip-register-difference asymmetry map, computed on the
      reoriented image, saved as channel 1 (mirrors compute_asymmetry_diff.py)
-  3) run the trained nnU-Net model (Dataset112, 3d_fullres, fold 0,
+  3) run the trained nnU-Net model (Dataset112, 3d_fullres, folds 0-4,
      nnUNetResEncUNetLPlans, 2 input channels)
-  4) map the prediction back onto the original input image's grid/orientation
+  4) apply postprocessing (if available) determined via
+     nnUNetv2_find_best_configuration on the 5-fold ensemble
+  5) map the prediction back onto the original input image's grid/orientation
 
 init_model() — called once at server startup. Loads the nnU-Net predictor.
 run(model)   — called once per case. Reads /input, runs inference, writes /output.
@@ -64,7 +70,7 @@ MODEL_DIR = Path("/opt/ml/model")
 NNUNET_CONFIGURATION = "3d_fullres"
 NNUNET_TRAINER = "nnUNetTrainer"
 NNUNET_PLANS = "nnUNetResEncUNetLPlans"
-NNUNET_FOLDS = (0,1,2,3,4,)  # single fold — confirmed to fit the time budget; 2-fold did not
+NNUNET_FOLDS = (0, 1, 2, 3, 4)  # confirmed to fit the time budget with N4 removed + trimmed registration
 NNUNET_CHECKPOINT = "checkpoint_best.pth"
 
 # -----------------------------------------------------------------------------
@@ -115,6 +121,32 @@ def _find_trained_model_folder():
     if len(candidates) > 1:
         print(f"WARNING: multiple candidate model folders found, using the first: {candidates}")
     return candidates[0]
+
+
+def _find_postprocessing_files():
+    """Locate postprocessing.pkl + plans.json produced by
+    nnUNetv2_find_best_configuration, from the crossval_results folder.
+
+    Expected layout under MODEL_DIR:
+      .../nnUNet_results/Dataset112_miccai/nnUNetTrainer__nnUNetResEncUNetLPlans__3d_fullres/
+          crossval_results_folds_0_1_2_3_4/postprocessing.pkl
+          crossval_results_folds_0_1_2_3_4/plans.json
+
+    Returns (pkl_path, plans_path) or (None, None) if not found. Does not raise —
+    postprocessing is treated as optional so a missing file doesn't crash inference,
+    it just skips postprocessing (logged clearly either way).
+    """
+    pkl_candidates = list(MODEL_DIR.glob("**/crossval_results_folds_*/postprocessing.pkl"))
+    if not pkl_candidates:
+        return None, None
+    if len(pkl_candidates) > 1:
+        print(f"WARNING: multiple postprocessing.pkl found, using the first: {pkl_candidates}")
+    pp_pkl = pkl_candidates[0]
+    pp_plans = pp_pkl.parent / "plans.json"
+    if not pp_plans.exists():
+        print(f"WARNING: found {pp_pkl} but no matching plans.json alongside it")
+        return pp_pkl, None
+    return pp_pkl, pp_plans
 
 
 def init_model():
@@ -241,6 +273,44 @@ def interf0_handler(predictor):
         )
         print(f"[TIMING] nnU-Net predict_from_files took {time.time() - t2:.1f}s")
 
+        # -----------------------------------------------------------
+        # 4) Apply postprocessing determined during training
+        #    (nnUNetv2_find_best_configuration -> postprocessing.pkl),
+        #    from the 5-fold crossval_results_folds_0_1_2_3_4/ folder.
+        # -----------------------------------------------------------
+        t_pp = time.time()
+        pp_pkl, pp_plans_json = _find_postprocessing_files()
+        if pp_pkl is not None and pp_plans_json is not None:
+            from nnunetv2.postprocessing.remove_connected_components import apply_postprocessing_to_folder
+            from batchgenerators.utilities.file_and_folder_operations import load_pickle, load_json
+
+            pp_fns_and_kwargs = load_pickle(str(pp_pkl))
+            pp_plans = load_json(str(pp_plans_json))
+
+            postprocessed_dir = tmp_dir / "postprocessed"
+            postprocessed_dir.mkdir()
+
+            # NOTE: apply_postprocessing_to_folder's exact kwarg names vary across
+            # nnunetv2 versions (some want plans_manager + dataset_json_file_or_dict
+            # instead of plans_file_or_dict). Run:
+            #   import inspect; from nnunetv2.postprocessing.remove_connected_components import apply_postprocessing_to_folder
+            #   print(inspect.signature(apply_postprocessing_to_folder))
+            # against your installed version and adjust the call below if it doesn't match.
+            apply_postprocessing_to_folder(
+                str(nnunet_output_dir),
+                str(postprocessed_dir),
+                pp_fns_and_kwargs[0],
+                pp_fns_and_kwargs[1],
+                plans_file_or_dict=pp_plans,
+                num_processes=1,  # low on purpose — GC inference containers have limited
+                                  # CPU; -np 8 from local CLI runs was for offline batch
+                                  # processing, not appropriate for a single-case container.
+            )
+            nnunet_output_dir = postprocessed_dir
+            print(f"[TIMING] Postprocessing took {time.time() - t_pp:.1f}s")
+        else:
+            print("[TIMING] No postprocessing.pkl/plans.json found under MODEL_DIR — skipping postprocessing")
+
         predicted_seg_path = nnunet_output_dir / f"{case_id}.nii.gz"
         predicted_npz_path = nnunet_output_dir / f"{case_id}.npz"
 
@@ -251,7 +321,7 @@ def interf0_handler(predictor):
     probability_map_image.CopyInformation(predicted_seg_image)
 
     # -------------------------------------------------------------------
-    # 4) Map prediction back onto the ORIGINAL input image's grid.
+    # 5) Map prediction back onto the ORIGINAL input image's grid.
     #    Reorientation/resampling preserves physical space, so resampling
     #    with an identity transform against the original image as reference
     #    correctly undoes step (1)'s reorientation and any spacing changes
