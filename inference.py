@@ -414,13 +414,18 @@ def _reorient_to_ras(image):
 
 
 def _mirror_flip_lr(image_ras):
-    """Mirror image content along the Left-Right axis (axis 0 in RAS).
+    """Swap left/right voxel content while preserving the input image grid.
 
-    Only pixel content is flipped; origin/spacing/direction stay the same, so
-    the result occupies the SAME physical space, mirrored — exactly what's
-    needed before registering back to the original.
+    SimpleITK arrays are ordered (Z, Y, X), so axis 2 is left-right after
+    canonical RAS reorientation. Copying the original geometry back onto the
+    flipped array keeps the result on the same voxel grid, matching the
+    standalone preprocessing script in ``preprocessing/``.
     """
-    return SimpleITK.Flip(image_ras, [True, False, False])
+    array = SimpleITK.GetArrayFromImage(image_ras)
+    flipped_array = numpy.flip(array, axis=2).copy()
+    flipped_image = SimpleITK.GetImageFromArray(flipped_array)
+    flipped_image.CopyInformation(image_ras)
+    return flipped_image
 
 
 def _rigid_register(fixed, moving):

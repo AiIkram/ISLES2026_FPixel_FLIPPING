@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated ISLES'26 paper."
+title: "From Baseline to Bilateral Asymmetry: A Systematic nnU-Net Comparison for Ischemic Stroke Lesion Segmentation in ISLES'26"
+type: software
+authors:
+  - family-names: Zayim
+    given-names: Beyza
+  - family-names: Aissiou
+    given-names: Ikram
+  - family-names: Collins
+    given-names: Stephan
+  - family-names: Lalande
+    given-names: Alain
+  - family-names: Meriaudeau
+    given-names: Fabrice
+url: https://papers.miccai.org/miccai-2026-sat/ISLES_028.html
+license: Apache-2.0
+preferred-citation:
+  type: conference-paper
+  title: "From Baseline to Bilateral Asymmetry: A Systematic nnU-Net Comparison for Ischemic Stroke Lesion Segmentation in ISLES'26"
+  authors:
+    - family-names: Zayim
+      given-names: Beyza
+    - family-names: Aissiou
+      given-names: Ikram
+    - family-names: Collins
+      given-names: Stephan
+    - family-names: Lalande
+      given-names: Alain
+    - family-names: Meriaudeau
+      given-names: Fabrice
+  collection-title: "Medical Image Computing and Computer Assisted Intervention -- MICCAI 2026 Workshops and Challenges"
+  year: 2026
+  url: https://papers.miccai.org/miccai-2026-sat/ISLES_028.html
